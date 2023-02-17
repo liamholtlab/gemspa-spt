@@ -42,8 +42,11 @@ class ParticleTracks:
 
         self.tracks = tracks
 
-    def detect_and_track(self, movie, size=11):
-        f = tp.locate(movie[0], size)
+    def detect_particles(self, movie, size=11):
+        pass
+
+    def track_particles(self):
+        pass
 
     def read_track_file(self, path, file_format='mosaic'):
         """
