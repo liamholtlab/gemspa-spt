@@ -13,7 +13,7 @@ file.  Mosaic, Trackmate and trackpy file formats are supported.
 import pandas as pd
 import numpy as np
 from skimage import draw
-
+from scipy.optimize import curve_fit
 
 class ParticleTracks:
 
@@ -65,8 +65,6 @@ class ParticleTracks:
 
         self.microns_per_pixel = 0.11
         self.time_lag_sec = 0.010
-        self.max_lagtime_fit = 11
-        self.error_term_fit = True
 
     def _set_dim(self):
         if self.tracks is not None:
@@ -239,125 +237,155 @@ class ParticleTracks:
 
         return self.mean_track_intensities
 
-    def msd_and_fitting(self, track_id, fft=True):
-        pass
+    def msd(self, track_id, fft=True):
+        if self.tracks is None:
+            raise Exception(f"Error in msd_and_fitting: track data is empty.")
 
-    def find_msds(self, track_id=None, fft=True):
+        if track_id not in np.unique(self.tracks[:, 0]):
+            raise Exception(f"Error in msd_and_fitting: track_id not found.")
+
+        traj = self.tracks[self.tracks[:, 0] == track_id]
+        r = traj[:, [2, 3, 4]] * self.microns_per_pixel
+        t = (traj[:, 1] - traj[0, 1]) * self.time_lag_sec
+
+        msds = np.zeros(shape=(r.shape[0], 5))
+        if fft:
+            #     MSD calculation using Fourier transform (faster)
+            #
+            #     The original Python implementation comes from a SO answer :
+            #     http://stackoverflow.com/questions/34222272/computing-mean-square-displacement-using-python-and-fft#34222273.
+            #     The algorithm is described in this paper : http://dx.doi.org/10.1051/sfn/201112010.
+            #
+            #     Vectorized implementation comes from "trackpy" package code :
+            #     https://github.com/soft-matter/trackpy/blob/master/trackpy/motion.py
+            #
+            N = len(r)
+
+            # S1:
+            D = r ** 2
+            D_sum = D[:N - 1] + D[:-N:-1]
+            S1 = 2 * D.sum(axis=0) - np.cumsum(D_sum, axis=0)
+
+            # S2 (auto correlation): find PSD, which is the fourier transform of the auto correlation
+            F = np.fft.fft(r, n=2 * N, axis=0)  # 2*N because of zero-padding
+            PSD = F * F.conjugate()
+            S2 = np.fft.ifft(PSD, axis=0)[1:N].real
+
+            # MSD = S1 - 2*S2
+            squared_disp = S1 - 2 * S2
+            squared_disp /= (N - np.arange(1, N)[:, np.newaxis])  # divide by (N-m)
+
+            # msds array to return from function
+            msds[1:, 0] = t[1:]
+            msds[1:, 1:4] = squared_disp[:, 0:3]
+            msds[1:, 4] = squared_disp.sum(axis=1)
+        else:
+            # straight-forward MSD calculation
+            shifts = np.arange(1, r.shape[0])
+            for i, shift in enumerate(shifts):
+                diffs = r[:-shift if shift else None] - r[shift:]
+                sqdist = np.square(diffs)
+
+                msds[i+1, 0] = t[i+1]
+                msds[i+1, 1:4] = sqdist[:, 0:3].mean(axis=0)
+                msds[i+1, 4] = sqdist.sum(axis=1).mean(axis=0)
+        return msds
+
+    def fit_msd_linear(self, t, msd, dim, max_lagtime=10, err=True):
+        t = t[:max_lagtime]
+        msd = msd[:max_lagtime]
+        if err:
+            def linear_fn(x, a, c):
+                return a * x + c
+            linear_fn_v = np.vectorize(linear_fn)
+            popt, pcov = curve_fit(linear_fn, t, msd, p0=[2*dim*0.2, 0])
+            residuals = msd - linear_fn_v(t, popt[0], popt[1])
+        else:
+            def linear_fn(x, a):
+                return a * x
+            linear_fn_v = np.vectorize(linear_fn)
+            popt, pcov = curve_fit(linear_fn, t, msd, p0=[2*dim*0.2])
+            residuals = msd - linear_fn_v(t, popt[0])
+
+        ss_res = np.sum(residuals ** 2)
+        ss_tot = np.sum((msd - np.mean(msd)) ** 2)
+        r_squared = max(0, 1-(ss_res/ss_tot))
+
+        D = popt[0]/(2*dim)
+        if err:
+            E = popt[1]
+        else:
+            E = 0
+
+        return D, E, r_squared
+
+    def fit_msd_loglog(self, t, msd, dim, max_lagtime=10):
+        t = t[:max_lagtime]
+        msd = msd[:max_lagtime]
+        def linear_fn(x, m, b):
+            return m * x + b
+        linear_fn_v = np.vectorize(linear_fn)
+
+        popt, pcov = curve_fit(linear_fn, np.log(t), np.nan_to_num(np.log(msd)), p0=[1, np.log(2*dim*0.2)])
+        residuals = np.nan_to_num(np.log(msd)) - linear_fn_v(np.log(t), popt[0], popt[1])
+        ss_res = np.sum(residuals**2)
+        ss_tot = np.sum((np.nan_to_num(np.log(msd))-np.mean(np.nan_to_num(np.log(msd))))**2)
+        r_squared = max(0, 1-(ss_res/ss_tot))
+
+        alpha = popt[0]
+        K = np.exp(popt[1])/(2*dim)
+
+        return K, alpha, r_squared
+
+    def msd_all_tracks(self, fft=True):
 
         if self.tracks is None:
             raise Exception(f"Error in find_msds: track data is empty.")
 
-        # init msd array if not already done so
-        if self.msds is None:
-            self.msds = np.zeros(shape=(self.tracks.shape[0], 5))
-            self.msds[:, 0] = self.tracks[:, 0]
+        # init msd array
+        self.msds = np.zeros(shape=(self.tracks.shape[0], self.dim+3))
+        self.msds[:, 0] = self.tracks[:, 0]
 
-        # 2d or 3d data?
-        if self.dim == 3:
-            pos_cols = [2, 3, 4]
-        else:
-            pos_cols = [3, 4]
+        # MSD ALL TRACKS
+        track_ids = np.unique(self.tracks[:, 0])
+        for track_id in track_ids:
+            self.msds[self.msds[:, 0] == track_id, 1:] = self._msd(track_id, fft)
 
-        if track_id is None:
-            pass
-            # BATCH MSD ALL TRACKS
-        else:
-            if track_id not in np.unique(self.tracks[:, 0]):
-                raise Exception(f"Error in find_msds: track_id not found.")
+        return self.msds
 
-            traj = self.tracks[self.tracks[:, 0] == track_id]
-            r = traj[:, pos_cols] * self.microns_per_pixel
-            t = (traj[:, 1] - traj[0, 1]) * self.time_lag_sec
-
-            if fft:
-                #     MSD calculation using Fourier transform (faster)
-                #
-                #     The original Python implementation comes from a SO answer :
-                #     http://stackoverflow.com/questions/34222272/computing-mean-square-displacement-using-python-and-fft#34222273.
-                #     The algorithm is described in this paper : http://dx.doi.org/10.1051/sfn/201112010.
-                #
-                #     Vectorized implementation comes from "trackpy" package code :
-                #     https://github.com/soft-matter/trackpy/blob/master/trackpy/motion.py
-                #
-
-                N = len(r)
-
-                # S1:
-                D = r**2
-                D_sum = D[:N-1] + D[:-N:-1]
-                S1 = 2*D.sum(axis=0)-np.cumsum(D_sum, axis=0)
-
-                # S2 (auto correlation): find PSD, which is the fourier transform of the auto correlation
-                F = np.fft.fft(r, n=2*N, axis=0)  # 2*N because of zero-padding
-                PSD = F*F.conjugate()
-                S2 = np.fft.ifft(PSD, axis=0)[1:N].real
-
-                # MSD = S1 - 2*S2
-                squared_disp = S1 - 2 * S2
-                squared_disp /= (N - np.arange(1, N)[:, np.newaxis])  # divide by (N-m)
-
-                # Insert into self.msds
-                self.msds[self.msds[:, 0] == track_id, 1] = t
-                self.msds[(self.msds[:, 0] == track_id) & (self.msds[:, 1] > 0), 2:2+self.dim] = squared_disp[:, 0:self.dim]
-                self.msds[(self.msds[:, 0] == track_id) & (self.msds[:, 1] > 0), 2+self.dim] = squared_disp.sum(axis=1)
-
-            else:
-                # straight-forward MSD calculation
-                shifts = np.arange(len(r))
-                msds = np.zeros(shape=(shifts.size, 4))
-
-                for i, shift in enumerate(shifts):
-                    diffs = r[:-shift if shift else None] - r[shift:]
-                    sqdist = np.square(diffs)
-
-                    msds[i, 0] = t[i]
-                    msds[i, 1] = sqdist[:, 0].mean()
-                    msds[i, 2] = sqdist[:, 1].mean()
-                    msds[i, 3] = sqdist.sum(axis=1).mean()
-
-                # Insert into self.msds
-                self.msds[self.msds[:, 0] == track_id, 1:] = msds
-
-        return self.msds[self.msds[:, 0] == track_id]
-
-    def fit_msd(self, track_id=None, msds=None, scale='linear'):
-
-        scale = scale.lower()
-        if scale not in ['linear', 'log']:
-            raise Exception(f"Error in fit_msd: scale must be one of 'linear' or 'log'")
-
-        if self.msds is None:
-            raise Exception(f"Error in fit_msd: msd data is empty.")
-
-        # init fit array if not already done so
-        if self.fit_results[scale] is None:
-            track_ids = np.unique(self.msds[:,0])
-            self.fit_results[scale] = np.zeros(shape=(track_ids.size, 5))
-            self.fit_results[scale][:, 0] = track_ids
-
-        if track_id is None:
-            pass
-            # BATCH MSD ALL TRACKS
-        else:
-            if track_id not in np.unique(self.msds[:, 0]):
-                raise Exception(f"Error in fit_msd: track_id not found.")
-
-            # Check find_msds has been run for this track (or all tracks)
-            traj = self.msds[self.msds[:, 0] == track_id]
-            if traj[:, 1:].sum() == 0:
-                raise Exception(f"Error in fit_msd: no msd data (find_msds must be run first for this track).")
-
-            # Fit linear or loglog scale
-            if scale == 'linear':  # D, Err, r_sq
-                pass
-            elif scale == 'log':  # K, alpha, r_sq
-                pass
-
-    # TODO: make one function to find msd and do fitting for linear and log scale if given a track ID
-    #  (data is not saved and this is a quick calculation)
+    # def fit_msd(self, track_id=None, msds=None, scale='linear'):
     #
-    # TODO: make 2 other functions, one to find msd for all tracks and the 2nd to do fitting for linear or log scale
-    #  (as chosen by user) run these to batch over all tracks
+    #     scale = scale.lower()
+    #     if scale not in ['linear', 'log']:
+    #         raise Exception(f"Error in fit_msd: scale must be one of 'linear' or 'log'")
+    #
+    #     if self.msds is None:
+    #         raise Exception(f"Error in fit_msd: msd data is empty.")
+    #
+    #     # init fit array if not already done so
+    #     if self.fit_results[scale] is None:
+    #         track_ids = np.unique(self.msds[:,0])
+    #         self.fit_results[scale] = np.zeros(shape=(track_ids.size, 5))
+    #         self.fit_results[scale][:, 0] = track_ids
+    #
+    #     if track_id is None:
+    #         pass
+    #         # BATCH MSD ALL TRACKS
+    #     else:
+    #         if track_id not in np.unique(self.msds[:, 0]):
+    #             raise Exception(f"Error in fit_msd: track_id not found.")
+    #
+    #         # Check find_msds has been run for this track (or all tracks)
+    #         traj = self.msds[self.msds[:, 0] == track_id]
+    #         if traj[:, 1:].sum() == 0:
+    #             raise Exception(f"Error in fit_msd: no msd data (find_msds must be run first for this track).")
+    #
+    #         # Fit linear or loglog scale
+    #         if scale == 'linear':  # D, Err, r_sq
+    #             pass
+    #         elif scale == 'log':  # K, alpha, r_sq
+    #             pass
+
 
 
 
