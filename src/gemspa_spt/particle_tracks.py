@@ -15,6 +15,7 @@ import numpy as np
 from skimage import draw
 from scipy.optimize import curve_fit
 
+
 class ParticleTracks:
 
     file_formats = ['mosaic', 'trackmate', 'trackpy', 'napari']
@@ -24,14 +25,30 @@ class ParticleTracks:
                     'napari':    ['track_id', 't', 'z', 'y', 'x']}
     skip_rows = {'mosaic': None, 'trackmate': [1, 2, 3], 'trackpy': None, 'napari': None}
 
-    def __init__(self, tracks=None):
+    def __init__(self, tracks=None, tracks_df=None, path=None, data_format='mosaic', sep=','):
         """
             Initialize class instance.
+            The track data will be initialized from one of: tracks, tracks_df or path
 
             Parameters
             ----------
             tracks : numpy 2d array
-            the track data with columns in this order: track_id, t, z, y, x
+                the track data with columns in this order: track_id, t, z, y, x
+
+            tracks_df : pandas.DataFrame
+                the track data as a data frame; data_format indicates the formatting
+
+            path : str
+                full path to the track file; data_format indicates the formatting, sep indicates file separator
+
+            data_format : str
+                String indicating type of formatting: 'mosaic', 'trackpy' or 'trackmate',  An Exception is raised if
+                the formatting is invalid or file_format is not one of: 'mosiac', 'trackmate', 'trackpy'
+                Used only if reading from a pandas data frame or from path
+
+            sep : str
+                String indicating field separator for file, e.g. ',' or '\t'
+                Used only if reading from path
 
             Returns
             -------
@@ -40,31 +57,40 @@ class ParticleTracks:
 
         if tracks is not None:
             if isinstance(tracks, np.ndarray) and (len(tracks.shape) == 2) and (tracks.shape[1] >= 5):
-                # format looks correct
                 self.tracks = tracks
 
-                # check if it is 2d or 3d data, and set self.dim
-                self._set_dim()
-
                 # self.track_df is the original input track data, as a pandas data frame
-                # (as input by read_track_df or read_track_file)
                 # here, it is the same as self.tracks but with the column names added
-                self.track_df = pd.DataFrame(self.tracks, columns=self.file_columns['napari'])
+                self.tracks_df = pd.DataFrame(self.tracks, columns=self.file_columns['napari'])
             else:
                 raise Exception(f"Error initializing track data: invalid format.")
         else:
-            self.tracks = None
-            self.track_df = None
-            self.dim = None
+            data_format = data_format.lower()
+            if data_format not in ParticleTracks.file_formats:
+                raise Exception(f"Error in initializing track data: data format '{data_format}' is not recognized.")
 
-        self.track_lengths = None
+            if tracks_df is None and path is not None:
+                tracks_df = pd.read_csv(path, sep=sep, header=0, skiprows=ParticleTracks.skip_rows[data_format])
+
+            if tracks_df is not None:
+                self._read_track_df(tracks_df, data_format=data_format)
+            else:
+                raise Exception(f"Error: no track data.")
+
+        self._init_track_data()
         self.mean_track_intensities = None
         self.track_intensities = None
         self.msds = None
+        self.ensemble_avg = None
         self.fit_results = {'linear': None, 'log': None}
 
         self.microns_per_pixel = 0.11
         self.time_lag_sec = 0.010
+
+    def _init_track_data(self):
+        self._set_dim()
+        self.track_ids = np.unique(self.tracks[:, 0])
+        self._set_track_lengths()
 
     def _set_dim(self):
         if self.tracks is not None:
@@ -73,7 +99,7 @@ class ParticleTracks:
             else:
                 self.dim = 3
 
-    def read_track_df(self, df, data_format='mosaic'):
+    def _read_track_df(self, df, data_format='mosaic'):
         """
             Read track data from a pandas data frame.
 
@@ -87,18 +113,7 @@ class ParticleTracks:
                 the track data as a data frame
             data_format : str
                 String indicating type of formatting: 'mosaic', 'trackpy' or 'trackmate'
-
-            An Exception is raised if the formatting is invalid or file_format is not one of:
-            'mosiac', 'trackmate', 'trackpy'
-
-            Returns
-            -------
-            (n, 5) ndarray: (n=number of tracks), column order is [track_id, t, z, y, x]
         """
-
-        data_format = data_format.lower()
-        if data_format not in ParticleTracks.file_formats:
-            raise Exception(f"Error in reading tracks data frame: file format '{data_format}' is not recognized.")
 
         if not isinstance(df, pd.DataFrame):
             raise Exception(f"Error in reading tracks data frame: input parameter df is not a pandas data frame")
@@ -108,43 +123,11 @@ class ParticleTracks:
                 raise Exception(
                     f"Error in reading tracks data frame: required column {col} is missing for format {data_format}")
 
-        self.track_df = df.copy()
+        self.tracks_df = df.copy()
         if ParticleTracks.file_columns[data_format][2] not in df.columns:
             df[ParticleTracks.file_columns[data_format][2]] = 0
 
         self.tracks = df[ParticleTracks.file_columns[data_format]]
-        self._set_dim()
-        return self.tracks
-
-    def read_track_file(self, path, data_format='mosaic', sep=','):
-        """
-            Read track data from a file.
-
-            Reads the track data from Mosaic, Trackmate or trackpy format files.  Track data will be extracted and
-            stored as a numpy array in the class variable, 'tracks'.
-
-            Parameters
-            ----------
-            path : str
-                Full path to the track file.
-            data_format : str
-                String indicating type of file: 'mosaic', 'trackpy' or 'trackmate'
-            sep : str
-                String indicating field separator for file, e.g. ',' or '\t'
-
-            An Exception is raised if the file format is invalid or file_format is not one of:
-            'mosiac', 'trackmate', 'trackpy'
-
-            Returns
-            -------
-            (n, 5) ndarray: (n=number of tracks), column order is [track_id, t, z, y, x]
-        """
-
-        if data_format not in ParticleTracks.file_formats:
-            raise Exception(f"Error in reading {path}: file format '{data_format}' is not recognized.")
-
-        df = pd.read_csv(path, sep=sep, header=0, skiprows=ParticleTracks.skip_rows[data_format])
-        return self.read_track_df(df, data_format=data_format)
 
     def write_track_file(self, path):
         """
@@ -165,7 +148,7 @@ class ParticleTracks:
         df = pd.DataFrame(self.tracks[:, 5], columns=['track_id', 't', 'z', 'y', 'x'])
         df.to_csv(path, sep='\t')
 
-    def find_track_lengths(self):
+    def _set_track_lengths(self):
         """
             Compute track lengths and fills the class variable, 'track_lengths'
 
@@ -180,8 +163,6 @@ class ParticleTracks:
             self.track_lengths = np.stack(np.unique(self.tracks[:, 0], return_counts=True), axis=1)
         else:
             raise Exception(f"Error find_track_lengths: track data is empty.")
-
-        return self.track_lengths
 
     def find_track_intensities(self, movie, radius=3):
         """
@@ -213,12 +194,11 @@ class ParticleTracks:
         if self.tracks[:, 1].max() >= movie.shape[0]:
             raise Exception("Error find_track_intensities: track frames exceed size of image first dimension.")
 
-        track_ids = np.unique(self.tracks[:, 0])
-        self.mean_track_intensities = np.zeros(shape=(track_ids.size, 3), )
+        self.mean_track_intensities = np.zeros(shape=(len(self.track_ids), 3), )
         self.track_intensities = np.zeros(shape=(self.tracks.shape[0], 3), )
 
         index = 0
-        for i, track_id in enumerate(track_ids):
+        for i, track_id in enumerate(self.track_ids):
             cur_track = self.tracks[self.tracks[:, 0] == track_id]
             for j in range(cur_track.shape[0]):
                 rr, cc = draw.disk((int(cur_track[j][3]),
@@ -241,7 +221,7 @@ class ParticleTracks:
         if self.tracks is None:
             raise Exception(f"Error in msd_and_fitting: track data is empty.")
 
-        if track_id not in np.unique(self.tracks[:, 0]):
+        if track_id not in self.track_ids:
             raise Exception(f"Error in msd_and_fitting: track_id not found.")
 
         traj = self.tracks[self.tracks[:, 0] == track_id]
@@ -343,17 +323,43 @@ class ParticleTracks:
             raise Exception(f"Error in find_msds: track data is empty.")
 
         # init msd array
-        self.msds = np.zeros(shape=(self.tracks.shape[0], self.dim+3))
+        self.msds = np.zeros(shape=(self.tracks.shape[0], 6))
         self.msds[:, 0] = self.tracks[:, 0]
 
         # MSD ALL TRACKS
-        track_ids = np.unique(self.tracks[:, 0])
-        for track_id in track_ids:
-            self.msds[self.msds[:, 0] == track_id, 1:] = self._msd(track_id, fft)
+        for track_id in self.track_ids:
+            self.msds[self.msds[:, 0] == track_id, 1:] = self.msd(track_id, fft)
 
         return self.msds
 
-    # def fit_msd(self, track_id=None, msds=None, scale='linear'):
+    def ensemble_avg_msd(self, min_len=11):
+        if self.tracks is None:
+            raise Exception(f"Error in ensemble_avg_msd: track data is empty.")
+
+        if self.msds is None:
+            raise Exception(f"Error in ensemble_avg_msd: msd data is empty.")
+
+        if min_len > 1:
+            # filter on track length
+            track_ids = self.track_lengths[self.track_lengths[:, 1] >= min_len, 0]
+            msds = self.msds[np.isin(self.msds[:, 0], track_ids)]
+        else:
+            track_ids = self.track_ids
+            msds = self.msds
+
+        if len(track_ids) > 0:
+            all_tlags = np.unique(msds[:, 1])
+            self.ensemble_avg_n = np.zeros(shape=len(all_tlags), dtype=int)
+            self.ensemble_avg = np.zeros(shape=(len(all_tlags), 5))
+            for i, tlag in enumerate(all_tlags):
+                tlag_msds = msds[msds[:, 1] == tlag, 1:]
+                self.ensemble_avg_n[i] = len(tlag_msds)
+                self.ensemble_avg[i] = np.mean(tlag_msds, axis=0)
+
+        return self.ensemble_avg, self.ensemble_avg_n
+
+
+    #def fit_msd_linear_all_tracks(self, max_lagtime=10, err=True):
     #
     #     scale = scale.lower()
     #     if scale not in ['linear', 'log']:
@@ -364,15 +370,14 @@ class ParticleTracks:
     #
     #     # init fit array if not already done so
     #     if self.fit_results[scale] is None:
-    #         track_ids = np.unique(self.msds[:,0])
-    #         self.fit_results[scale] = np.zeros(shape=(track_ids.size, 5))
-    #         self.fit_results[scale][:, 0] = track_ids
+    #         self.fit_results[scale] = np.zeros(shape=(len(self.track_ids), 5))
+    #         self.fit_results[scale][:, 0] = self.track_ids
     #
     #     if track_id is None:
     #         pass
     #         # BATCH MSD ALL TRACKS
     #     else:
-    #         if track_id not in np.unique(self.msds[:, 0]):
+    #         if track_id not in self.track_ids:
     #             raise Exception(f"Error in fit_msd: track_id not found.")
     #
     #         # Check find_msds has been run for this track (or all tracks)
