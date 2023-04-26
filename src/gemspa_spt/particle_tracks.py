@@ -14,7 +14,7 @@ import pandas as pd
 import numpy as np
 from skimage import draw
 from scipy.optimize import curve_fit
-
+from multiprocessing import Pool
 
 class ParticleTracks:
 
@@ -82,7 +82,8 @@ class ParticleTracks:
         self.track_intensities = None
         self.msds = None
         self.ensemble_avg = None
-        self.fit_results = {'linear': None, 'log': None}
+        self.linear_fit_results = None
+        self.loglog_fit_results = None
 
         self.microns_per_pixel = 0.11
         self.time_lag_sec = 0.010
@@ -318,7 +319,6 @@ class ParticleTracks:
         return K, alpha, r_squared
 
     def msd_all_tracks(self, fft=True):
-
         if self.tracks is None:
             raise Exception(f"Error in find_msds: track data is empty.")
 
@@ -358,38 +358,68 @@ class ParticleTracks:
 
         return self.ensemble_avg, self.ensemble_avg_n
 
+    def _fit_msd_all_tracks(self, params):
+        track_ids, msds, linear_fit, dim, max_lagtime, err = params
 
-    #def fit_msd_linear_all_tracks(self, max_lagtime=10, err=True):
-    #
-    #     scale = scale.lower()
-    #     if scale not in ['linear', 'log']:
-    #         raise Exception(f"Error in fit_msd: scale must be one of 'linear' or 'log'")
-    #
-    #     if self.msds is None:
-    #         raise Exception(f"Error in fit_msd: msd data is empty.")
-    #
-    #     # init fit array if not already done so
-    #     if self.fit_results[scale] is None:
-    #         self.fit_results[scale] = np.zeros(shape=(len(self.track_ids), 5))
-    #         self.fit_results[scale][:, 0] = self.track_ids
-    #
-    #     if track_id is None:
-    #         pass
-    #         # BATCH MSD ALL TRACKS
-    #     else:
-    #         if track_id not in self.track_ids:
-    #             raise Exception(f"Error in fit_msd: track_id not found.")
-    #
-    #         # Check find_msds has been run for this track (or all tracks)
-    #         traj = self.msds[self.msds[:, 0] == track_id]
-    #         if traj[:, 1:].sum() == 0:
-    #             raise Exception(f"Error in fit_msd: no msd data (find_msds must be run first for this track).")
-    #
-    #         # Fit linear or loglog scale
-    #         if scale == 'linear':  # D, Err, r_sq
-    #             pass
-    #         elif scale == 'log':  # K, alpha, r_sq
-    #             pass
+        d = 1
+        if dim == 'sum':
+            d = 2
+
+        fit_results = np.zeros(shape=(len(track_ids), 5))
+        for i, track_id in enumerate(track_ids):
+            msd1 = msds[msds[:, 0] == track_id]
+            if linear_fit:
+                D, E, r_squared = self.fit_msd_linear(msd1[1:, 1], msd1[1:, 2], d, max_lagtime=max_lagtime, err=err)
+                fit_results[i] = np.asarray([track_id, dim, D, E, r_squared])
+            else:
+                K, alpha, r_squared = self.fit_msd_loglog(msd1[1:, 0], msd1[1:, 1], d, max_lagtime=max_lagtime)
+                fit_results[i] = np.asarray([track_id, dim, K, alpha, r_squared])
+
+        return fit_results
+
+    def fit_msd_all_tracks(self, linear_fit=True, min_len=11, max_lagtime=10, err=True):
+        if self.msds is None:
+            raise Exception(f"Error in fit_msd_all_tracks: msd data is empty.")
+
+        # subset track_ids that reach min_len
+        track_ids = self.track_lengths[self.track_lengths[:, 1] >= min_len, 0]
+
+        # fit for each dimension, then fill array - use multiprocessing
+        msds_list = []
+        dim_dict = {'z': 2, 'y': 3, 'x': 4, 'sum': 5}
+        dim_list = []
+        for dim in dim_dict.keys():
+            msds = self.msds[:, [0, 1, dim_dict[dim]]]
+            if len(np.unique(msds[:, 2])) > 1:
+                msds_list.append(msds)
+                dim_list.append(dim)
+
+        group_size = len(msds_list)
+        params_arr = list(zip([track_ids] * group_size,
+                              msds_list,
+                              [linear_fit] * group_size,
+                              dim_list,
+                              [max_lagtime] * group_size,
+                              [err] * group_size))
+        with Pool(group_size) as p:
+            results_list = p.map(self._fit_msd_all_tracks, params_arr)
+
+            # fill class variable and sort by track id
+            if linear_fit:
+                self.linear_fit_results = np.concatenate(results_list, axis=0)
+                self.linear_fit_results = self.linear_fit_results[self.linear_fit_results[:, 0].argsort()]
+            else:
+                self.loglog_fit_results = np.concatenate(results_list, axis=0)
+                self.loglog_fit_results = self.loglog_fit_results[self.loglog_fit_results[:, 0].argsort()]
+
+        if linear_fit:
+            return self.linear_fit_results
+        else:
+            return self.loglog_fit_results
+
+
+
+
 
 
 
