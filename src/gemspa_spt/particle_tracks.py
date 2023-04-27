@@ -16,6 +16,7 @@ from skimage import draw
 from scipy.optimize import curve_fit
 from multiprocessing import Pool
 
+
 class ParticleTracks:
 
     file_formats = ['mosaic', 'trackmate', 'trackpy', 'napari']
@@ -24,6 +25,8 @@ class ParticleTracks:
                     'trackpy':   ['particle', 'frame', 'z', 'y', 'x'],
                     'napari':    ['track_id', 't', 'z', 'y', 'x']}
     skip_rows = {'mosaic': None, 'trackmate': [1, 2, 3], 'trackpy': None, 'napari': None}
+    dim_columns = {'z': 2, 'y': 3, 'x': 4, 'sum': 5}
+    column_dims = {2: 'z', 3: 'y', 4: 'x', 5: 'sum'}
 
     def __init__(self, tracks=None, tracks_df=None, path=None, data_format='mosaic', sep=','):
         """
@@ -94,11 +97,11 @@ class ParticleTracks:
         self._set_track_lengths()
 
     def _set_dim(self):
+        self.dimension = 0
         if self.tracks is not None:
-            if np.unique(self.tracks[:, 2]).shape[0] == 1:
-                self.dim = 2
-            else:
-                self.dim = 3
+            for dim in ParticleTracks.dim_columns.keys():
+                if dim != 'sum' and np.unique(self.tracks[:, ParticleTracks.dim_columns[dim]]).shape[0] > 1:
+                    self.dimension += 1
 
     def _read_track_df(self, df, data_format='mosaic'):
         """
@@ -361,23 +364,24 @@ class ParticleTracks:
     def _fit_msd_all_tracks(self, params):
         track_ids, msds, linear_fit, dim, max_lagtime, err = params
 
-        d = 1
         if dim == 'sum':
-            d = 2
+            d = self.dimension
+        else:
+            d = 1
 
         fit_results = np.zeros(shape=(len(track_ids), 5))
         for i, track_id in enumerate(track_ids):
-            msd1 = msds[msds[:, 0] == track_id]
+            msd = msds[msds[:, 0] == track_id]
             if linear_fit:
-                D, E, r_squared = self.fit_msd_linear(msd1[1:, 1], msd1[1:, 2], d, max_lagtime=max_lagtime, err=err)
-                fit_results[i] = np.asarray([track_id, dim, D, E, r_squared])
+                D, E, r_squared = self.fit_msd_linear(msd[1:, 1], msd[1:, 2], d, max_lagtime=max_lagtime, err=err)
+                fit_results[i] = np.asarray([track_id, ParticleTracks.dim_columns[dim], D, E, r_squared])
             else:
-                K, alpha, r_squared = self.fit_msd_loglog(msd1[1:, 0], msd1[1:, 1], d, max_lagtime=max_lagtime)
-                fit_results[i] = np.asarray([track_id, dim, K, alpha, r_squared])
+                K, alpha, r_squared = self.fit_msd_loglog(msd[1:, 1], msd[1:, 2], d, max_lagtime=max_lagtime)
+                fit_results[i] = np.asarray([track_id, ParticleTracks.dim_columns[dim], K, alpha, r_squared])
 
         return fit_results
 
-    def fit_msd_all_tracks(self, linear_fit=True, min_len=11, max_lagtime=10, err=True):
+    def fit_msd_all_tracks(self, linear_fit=True, min_len=11, max_lagtime=10, err=True, all_dims=False):
         if self.msds is None:
             raise Exception(f"Error in fit_msd_all_tracks: msd data is empty.")
 
@@ -386,13 +390,16 @@ class ParticleTracks:
 
         # fit for each dimension, then fill array - use multiprocessing
         msds_list = []
-        dim_dict = {'z': 2, 'y': 3, 'x': 4, 'sum': 5}
         dim_list = []
-        for dim in dim_dict.keys():
-            msds = self.msds[:, [0, 1, dim_dict[dim]]]
-            if len(np.unique(msds[:, 2])) > 1:
-                msds_list.append(msds)
-                dim_list.append(dim)
+        if all_dims:
+            for dim in ParticleTracks.dim_columns.keys():
+                msds = self.msds[:, [0, 1, ParticleTracks.dim_columns[dim]]]
+                if len(np.unique(msds[:, 2])) > 1:
+                    msds_list.append(msds)
+                    dim_list.append(dim)
+        else:
+            msds_list.append(self.msds[:, [0, 1, ParticleTracks.dim_columns['sum']]])
+            dim_list.append('sum')
 
         group_size = len(msds_list)
         params_arr = list(zip([track_ids] * group_size,
@@ -405,16 +412,15 @@ class ParticleTracks:
             results_list = p.map(self._fit_msd_all_tracks, params_arr)
 
             # fill class variable and sort by track id
-            if linear_fit:
-                self.linear_fit_results = np.concatenate(results_list, axis=0)
-                self.linear_fit_results = self.linear_fit_results[self.linear_fit_results[:, 0].argsort()]
-            else:
-                self.loglog_fit_results = np.concatenate(results_list, axis=0)
-                self.loglog_fit_results = self.loglog_fit_results[self.loglog_fit_results[:, 0].argsort()]
+            results_list = np.concatenate(results_list, axis=0)
+            if all_dims:
+                results_list = results_list[np.lexsort((results_list[:, 1], results_list[:, 0]))]
 
         if linear_fit:
+            self.linear_fit_results = results_list
             return self.linear_fit_results
         else:
+            self.loglog_fit_results = results_list
             return self.loglog_fit_results
 
 
