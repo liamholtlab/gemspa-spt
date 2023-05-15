@@ -221,12 +221,42 @@ class ParticleTracks:
 
         return self.mean_track_intensities
 
-    def msd(self, track_id, fft=True):
+    def angle(self, track_id):
         if self.tracks is None:
-            raise Exception(f"Error in msd_and_fitting: track data is empty.")
+            raise Exception(f"Error in step_size: track data is empty.")
 
         if track_id not in self.track_ids:
-            raise Exception(f"Error in msd_and_fitting: track_id not found.")
+            raise Exception(f"Error in step_size: track_id not found.")
+
+        traj = self.tracks[self.tracks[:, 0] == track_id]
+
+    def step_size(self, track_id):
+        if self.tracks is None:
+            raise Exception(f"Error in step_size: track data is empty.")
+
+        if track_id not in self.track_ids:
+            raise Exception(f"Error in step_size: track_id not found.")
+
+        traj = self.tracks[self.tracks[:, 0] == track_id]
+        r = traj[:, [2, 3, 4]] * self.microns_per_pixel
+        t = (traj[:, 1] - traj[0, 1]) * self.time_lag_sec
+
+        step_sizes = np.zeros(shape=(r.shape[0], 5))
+
+        diffs_1d = np.abs(r[:-1] - r[1:])
+
+        step_sizes[:, 0] = t
+        step_sizes[1:, 1:4] = diffs_1d
+        step_sizes[1:, 4] = np.sqrt(np.square(diffs_1d).sum(axis=1))
+
+        return step_sizes
+
+    def msd(self, track_id, fft=True):
+        if self.tracks is None:
+            raise Exception(f"Error in msd: track data is empty.")
+
+        if track_id not in self.track_ids:
+            raise Exception(f"Error in msd: track_id not found.")
 
         traj = self.tracks[self.tracks[:, 0] == track_id]
         r = traj[:, [2, 3, 4]] * self.microns_per_pixel
@@ -321,9 +351,23 @@ class ParticleTracks:
 
         return K, alpha, r_squared
 
+    def step_size_all_tracks(self):
+        if self.tracks is None:
+            raise Exception(f"Error in step_size_all_tracks: track data is empty.")
+
+        # init step size array
+        self.step_sizes = np.zeros(shape=(self.tracks.shape[0], 6))
+        self.step_sizes[:, 0] = self.tracks[:, 0]
+
+        # ALL TRACKS
+        for track_id in self.track_ids:
+            self.step_sizes[self.step_sizes[:, 0] == track_id, 1:] = self.step_size(track_id)
+
+        return self.step_sizes
+
     def msd_all_tracks(self, fft=True):
         if self.tracks is None:
-            raise Exception(f"Error in find_msds: track data is empty.")
+            raise Exception(f"Error in msd_all_tracks: track data is empty.")
 
         # init msd array
         self.msds = np.zeros(shape=(self.tracks.shape[0], 6))
