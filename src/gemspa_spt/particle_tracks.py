@@ -223,10 +223,10 @@ class ParticleTracks:
 
     def angle(self, track_id):
         if self.tracks is None:
-            raise Exception(f"Error in step_size: track data is empty.")
+            raise Exception(f"Error in angle: track data is empty.")
 
         if track_id not in self.track_ids:
-            raise Exception(f"Error in step_size: track_id not found.")
+            raise Exception(f"Error in angle: track_id not found.")
 
         traj = self.tracks[self.tracks[:, 0] == track_id]
 
