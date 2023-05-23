@@ -19,12 +19,12 @@ from multiprocessing import Pool
 
 class ParticleTracks:
 
-    file_formats = ['mosaic', 'trackmate', 'trackpy', 'napari']
+    file_formats = ['mosaic', 'trackmate', 'trackpy', 'gemspa']
     file_columns = {'mosaic':    ['trajectory', 'frame', 'z', 'y', 'x'],
                     'trackmate': ['track_id', 'frame', 'position_z', 'position_y', 'position_x'],
                     'trackpy':   ['particle', 'frame', 'z', 'y', 'x'],
-                    'napari':    ['track_id', 't', 'z', 'y', 'x']}
-    skip_rows = {'mosaic': None, 'trackmate': [1, 2, 3], 'trackpy': None, 'napari': None}
+                    'gemspa':    ['track_id', 'frame', 'z', 'y', 'x']}
+    skip_rows = {'mosaic': None, 'trackmate': [1, 2, 3], 'trackpy': None, 'gemspa': None}
     dim_columns = {'z': 2, 'y': 3, 'x': 4, 'sum': 5}
     column_dims = {2: 'z', 3: 'y', 4: 'x', 5: 'sum'}
 
@@ -64,7 +64,7 @@ class ParticleTracks:
 
                 # self.track_df is the original input track data, as a pandas data frame
                 # here, it is the same as self.tracks but with the column names added
-                self.tracks_df = pd.DataFrame(self.tracks, columns=self.file_columns['napari'])
+                self.tracks_df = pd.DataFrame(self.tracks, columns=self.file_columns['gemspa'])
             else:
                 raise Exception(f"Error initializing track data: invalid format.")
         else:
