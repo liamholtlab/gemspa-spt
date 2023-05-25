@@ -15,7 +15,7 @@ import numpy as np
 from skimage import draw
 from scipy.optimize import curve_fit
 from multiprocessing import Pool
-
+from numpy import linalg as LA
 
 class ParticleTracks:
 
@@ -86,6 +86,7 @@ class ParticleTracks:
         self.ensemble_avg = None
         self.linear_fit_results = None
         self.loglog_fit_results = None
+        self.radius_of_gyration = None
 
         self.microns_per_pixel = 0.11
         self.time_lag_sec = 0.010
@@ -363,6 +364,41 @@ class ParticleTracks:
             self.step_sizes[self.step_sizes[:, 0] == track_id, 1:] = self.step_size(track_id)
 
         return self.step_sizes
+
+    def r_of_g(self, track_id):
+        # Calculate the radius of gyration for the tracks at its full length
+        # (It is also possible to calculate the radius of gyration at each step)
+        if self.tracks is None:
+            raise Exception(f"Error in radius_of_gyration: track data is empty.")
+
+        if track_id not in self.track_ids:
+            raise Exception(f"Error in radius_of_gyration: track_id not found.")
+
+        traj = self.tracks[self.tracks[:, 0] == track_id]
+        n = len(traj)
+
+        # np.cov divides by (n-1) but I want to divide by n
+        T = np.cov(traj[:n, self.tracks_x_col], traj[:n, self.tracks_y_col]) * (n - 1) / n
+
+        # eigenvalues (w) are squared radii of gyration
+        w, v = LA.eig(T)
+
+        return np.sqrt(np.sum(w)) * self.micron_per_px
+
+    def r_of_g_all_tracks(self):
+        if self.tracks is None:
+            raise Exception(f"Error in radius_of_gyration_all_tracks: track data is empty.")
+
+        # init array
+        self.radius_of_gyration = np.zeros(shape=(self.track_ids.shape[0], 2))
+        self.radius_of_gyration[:, 0] = self.track_ids[:, 0]
+
+        # R of G ALL TRACKS
+        for i, track_id in enumerate(self.track_ids):
+            self.radius_of_gyration[i, 0] = track_id
+            self.radius_of_gyration[i, 1] = self.r_of_g(track_id)
+
+        return self.radius_of_gyration
 
     def msd_all_tracks(self, fft=True):
         if self.tracks is None:
