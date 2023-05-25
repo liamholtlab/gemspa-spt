@@ -19,7 +19,6 @@ from multiprocessing import Pool
 
 class ParticleTracks:
 
-    file_formats = ['mosaic', 'trackmate', 'trackpy', 'gemspa']
     file_columns = {'mosaic':    ['trajectory', 'frame', 'z', 'y', 'x'],
                     'trackmate': ['track_id', 'frame', 'position_z', 'position_y', 'position_x'],
                     'trackpy':   ['particle', 'frame', 'z', 'y', 'x'],
@@ -69,7 +68,7 @@ class ParticleTracks:
                 raise Exception(f"Error initializing track data: invalid format.")
         else:
             data_format = data_format.lower()
-            if data_format not in ParticleTracks.file_formats:
+            if data_format not in ParticleTracks.file_columns.keys():
                 raise Exception(f"Error in initializing track data: data format '{data_format}' is not recognized.")
 
             if tracks_df is None and path is not None:
