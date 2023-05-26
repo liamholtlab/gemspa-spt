@@ -17,6 +17,7 @@ from scipy.optimize import curve_fit
 from multiprocessing import Pool
 from numpy import linalg as LA
 
+
 class ParticleTracks:
 
     file_columns = {'mosaic':    ['trajectory', 'frame', 'z', 'y', 'x'],
@@ -87,6 +88,7 @@ class ParticleTracks:
         self.linear_fit_results = None
         self.loglog_fit_results = None
         self.radius_of_gyration = None
+        self.step_sizes = None
 
         self.microns_per_pixel = 0.11
         self.time_lag_sec = 0.010
@@ -365,9 +367,11 @@ class ParticleTracks:
 
         return self.step_sizes
 
-    def r_of_g(self, track_id):
-        # Calculate the radius of gyration for the tracks at its full length
-        # (It is also possible to calculate the radius of gyration at each step)
+    def r_of_g(self, track_id, full=True):
+        # https://doi.org/10.1039/c0cp01805h
+        # Calculate the radius of gyration for the track
+        # if full is set to True, r-of-g will be returned for each step
+        # if full is set to False, only return the r-of-g for the entire track
         if self.tracks is None:
             raise Exception(f"Error in radius_of_gyration: track data is empty.")
 
@@ -375,28 +379,58 @@ class ParticleTracks:
             raise Exception(f"Error in radius_of_gyration: track_id not found.")
 
         traj = self.tracks[self.tracks[:, 0] == track_id]
-        n = len(traj)
 
-        # np.cov divides by (n-1) but I want to divide by n
-        T = np.cov(traj[:n, self.tracks_x_col], traj[:n, self.tracks_y_col]) * (n - 1) / n
+        if full:
+            r_of_g = np.zeros(shape=(traj.shape[0], 2))
+            r_of_g[:, 0] = (traj[:, 1] - traj[0, 1]) * self.time_lag_sec
 
-        # eigenvalues (w) are squared radii of gyration
-        w, v = LA.eig(T)
+            for n in range(2, len(traj) + 1):
+                # np.cov divides by (n-1) but I want to divide by n
+                T = np.cov(traj[:n, 2:], rowvar=False) * (n - 1) / n
 
-        return np.sqrt(np.sum(w)) * self.micron_per_px
+                # eigenvalues (w) are squared radii of gyration
+                w, v = LA.eig(T)
 
-    def r_of_g_all_tracks(self):
+                r_of_g[n - 1, 1] = np.sqrt(np.sum(w)) * self.microns_per_pixel
+
+            return r_of_g
+
+        else:
+            n = len(traj)
+
+            # np.cov divides by (n-1) but I want to divide by n
+            T = np.cov(traj[:, 2:], rowvar=False) * (n - 1) / n
+
+            # eigenvalues (w) are squared radii of gyration
+            w, v = LA.eig(T)
+
+            return np.sqrt(np.sum(w)) * self.microns_per_pixel
+
+    def r_of_g_all_tracks(self, full=True):
+        # Calculate the radius of gyration for all tracks
+        # if full is set to True, r-of-g will be returned for each step
+        # if full is set to False, only return the r-of-g for the entire track
         if self.tracks is None:
             raise Exception(f"Error in radius_of_gyration_all_tracks: track data is empty.")
 
-        # init array
-        self.radius_of_gyration = np.zeros(shape=(self.track_ids.shape[0], 2))
-        self.radius_of_gyration[:, 0] = self.track_ids[:, 0]
+        if full:
+            # init array
+            self.radius_of_gyration = np.zeros(shape=(self.tracks.shape[0], 3))
+            self.radius_of_gyration[:, 0] = self.tracks[:, 0]
 
-        # R of G ALL TRACKS
-        for i, track_id in enumerate(self.track_ids):
-            self.radius_of_gyration[i, 0] = track_id
-            self.radius_of_gyration[i, 1] = self.r_of_g(track_id)
+            # R of G ALL TRACKS
+            for track_id in self.track_ids:
+                self.radius_of_gyration[self.radius_of_gyration[:, 0] == track_id, 1:] = self.r_of_g(track_id)
+
+        else:
+            # init array
+            self.radius_of_gyration = np.zeros(shape=(self.track_ids.shape[0], 2))
+            self.radius_of_gyration[:, 0] = self.track_ids
+
+            # R of G ALL TRACKS
+            for i, track_id in enumerate(self.track_ids):
+                self.radius_of_gyration[i, 0] = track_id
+                self.radius_of_gyration[i, 1] = self.r_of_g(track_id, full)
 
         return self.radius_of_gyration
 
