@@ -21,7 +21,7 @@ classifiers = [
 dependencies = [
     "numpy",
     "pandas",
-    "scikit-image"
+    "scipy"
 ]
 
 [project.urls]
